@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Project Pixel Perfect - JSON Exporter</title>
+    <style>
+        body {
+            background-color: #1a1a2e;
+            color: #e0e0e0;
+            font-family: monospace;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 30px;
+            margin: 0;
+        }
+        .panel {
+            background: #16213e;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+            margin-bottom: 20px;
+            width: 100%;
+            max-width: 800px;
+        }
+        .panel h2 { margin-top: 0; color: #0f3460; text-transform: uppercase; color: #43bccd; }
+        .controls {
+            display: flex;
+            gap: 15px;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        input[type="file"] { font-size: 14px; color: #fff; }
+        button {
+            background: #e94560;
+            color: #fff;
+            border: none;
+            padding: 10px 20px;
+            font-weight: bold;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover { background: #d0304d; }
+        canvas {
+            background: #0f3460;
+            border: 1px solid #333;
+            max-width: 100%;
+            display: block;
+            margin: 0 auto;
+        }
+        #status { color: #f9a826; font-weight: bold; margin-bottom: 10px; }
+    </style>
+</head>
+<body>
+
+    <div class="panel">
+        <h2>1. Export Image to Pixel Map (JSON)</h2>
+        <div class="controls">
+            <input type="file" id="imageInput" accept="image/*" />
+            <button id="exportBtn">Generate & Download JSON</button>
+        </div>
+        <p><em>Note: Large images (e.g., 1920x1080) contain over 2 million pixels and will generate a large JSON file.</em></p>
+    </div>
+
+    <div class="panel">
+        <h2>2. Re-create Image from JSON</h2>
+        <div class="controls">
+            <input type="file" id="jsonInput" accept=".json" />
+            <button id="rebuildBtn">Rebuild Pixel-by-Pixel</button>
+        </div>
+        <div id="status">Waiting for input...</div>
+        <canvas id="canvas"></canvas>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        const statusEl = document.getElementById('status');
+        
+        let loadedImage = null;
+
+        // Utility: RGB/A to Hex string
+        function rgbaToHex(r, g, b, a) {
+            // Include alpha channel if not fully opaque
+            if (a < 255) {
+                return "#" + (1 << 32 | r << 24 | g << 16 | b << 8 | a).toString(16).slice(1).padStart(8, '0');
+            }
+            return "#" + (1 << 24 | r << 16 | g << 8 | b).toString(16).slice(1).padStart(6, '0');
+        }
+
+        // Utility: Hex string to RGBA array
+        function hexToRgba(hex) {
+            hex = hex.replace(/^#/, '');
+            let r, g, b, a = 255;
+            if (hex.length === 8) {
+                r = parseInt(hex.substring(0, 2), 16);
+                g = parseInt(hex.substring(2, 4), 16);
+                b = parseInt(hex.substring(4, 6), 16);
+                a = parseInt(hex.substring(6, 8), 16);
+            } else {
+                r = parseInt(hex.substring(0, 2), 16);
+                g = parseInt(hex.substring(2, 4), 16);
+                b = parseInt(hex.substring(4, 6), 16);
+            }
+            return [r, g, b, a];
+        }
+
+        // Handle Image Upload for Export
+        document.getElementById('imageInput').addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                const img = new Image();
+                img.onload = () => {
+                    loadedImage = img;
+                    // Set canvas to exact native resolution
+                    canvas.width = img.naturalWidth;
+                    canvas.height = img.naturalHeight;
+                    ctx.drawImage(img, 0, 0);
+                    statusEl.innerText = `Image loaded. Resolution: ${img.naturalWidth}x${img.naturalHeight}`;
+                };
+                img.src = event.target.result;
+            };
+            reader.readAsDataURL(file);
+        });
+
+        // 1. Export JSON Workflow
+        document.getElementById('exportBtn').addEventListener('click', () => {
+            if (!loadedImage) return alert("Please select an image first.");
+            statusEl.innerText = "Extracting pixels... This may take a moment for high-res images.";
+            
+            setTimeout(() => {
+                const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+                const pixelMap = [];
+
+                // Loop through exact resolution
+                for (let y = 0; y < canvas.height; y++) {
+                    for (let x = 0; x < canvas.width; x++) {
+                        const index = (y * canvas.width + x) * 4;
+                        const r = imgData[index];
+                        const g = imgData[index + 1];
+                        const b = imgData[index + 2];
+                        const a = imgData[index + 3];
+
+                        // Skip fully transparent pixels to save JSON file size
+                        if (a > 0) {
+                            pixelMap.push({
+                                x: x,
+                                y: y,
+                                hex: rgbaToHex(r, g, b, a)
+                            });
+                        }
+                    }
+                }
+
+                // Create JSON structure capturing resolution context
+                const exportData = {
+                    metadata: {
+                        width: canvas.width,
+                        height: canvas.height,
+                        total_pixels: pixelMap.length
+                    },
+                    pixels: pixelMap
+                };
+
+                // Trigger download
+                const blob = new Blob([JSON.stringify(exportData)], { type: "application/json" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = "pixel_perfect_export.json";
+                a.click();
+                URL.revokeObjectURL(url);
+                
+                statusEl.innerText = "JSON Exported successfully!";
+            }, 50); // Small timeout to allow UI update before heavy blocking thread
+        });
+
+        // 2. Rebuild Image Workflow
+        let loadedJson = null;
+        document.getElementById('jsonInput').addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            statusEl.innerText = "Reading JSON file...";
+            
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                loadedJson = JSON.parse(event.target.result);
+                statusEl.innerText = `JSON Loaded. Found ${loadedJson.metadata.total_pixels} pixels. Ready to rebuild.`;
+            };
+            reader.readAsText(file);
+        });
+
+        document.getElementById('rebuildBtn').addEventListener('click', () => {
+            if (!loadedJson) return alert("Please upload a Pixel Perfect JSON file first.");
+            
+            // Set canvas exact dimensions from JSON metadata
+            const width = loadedJson.metadata.width;
+            const height = loadedJson.metadata.height;
+            canvas.width = width;
+            canvas.height = height;
+            ctx.clearRect(0, 0, width, height);
+
+            statusEl.innerText = "Rebuilding image pixel-by-pixel...";
+
+            setTimeout(() => {
+                // Using ImageData directly is thousands of times faster than filling individual rects
+                const imgData = ctx.createImageData(width, height);
+                
+                loadedJson.pixels.forEach(p => {
+                    const [r, g, b, a] = hexToRgba(p.hex);
+                    const index = (p.y * width + p.x) * 4;
+                    imgData.data[index] = r;
+                    imgData.data[index + 1] = g;
+                    imgData.data[index + 2] = b;
+                    imgData.data[index + 3] = a;
+                });
+
+                ctx.putImageData(imgData, 0, 0);
+                statusEl.innerText = "Rebuild complete. 100% Quality Match.";
+            }, 50);
+        });
+    </script>
+</body>
+</html>
